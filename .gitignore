@@ -1,0 +1,6 @@
+# CodeBuddy 本地计划/过程文档，不入库
+.codebuddy/plans/
+
+# 系统与编辑器杂项
+.DS_Store
+Thumbs.db
