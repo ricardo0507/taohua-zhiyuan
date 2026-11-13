@@ -2,6 +2,10 @@ export interface Post {
   id: string
   content: string
   createdAt: number
+  /** 点赞数，缺失或非法时归一为 0 */
+  likes: number
+  liked: boolean
+  favorited: boolean
 }
 
 /** 与后端保持一致的内容长度上限 */
@@ -87,17 +91,36 @@ async function request(path: string, init: RequestInit = {}): Promise<ApiRespons
   return { status: response.status, body: await readJson(response) }
 }
 
-/** 结构不完整的记录一律丢弃，避免脏数据进入界面 */
+/** 点赞数容错：缺失、非数字、非有限或负数一律归 0 */
+function toLikes(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return 0
+
+  return value
+}
+
+/** 布尔标记容错：非布尔值一律视为 false */
+function toFlag(value: unknown): boolean {
+  return typeof value === 'boolean' ? value : false
+}
+
+/** 结构不完整的记录一律丢弃，避免脏数据进入界面；新增字段缺失时补齐默认值 */
 function toPost(value: unknown): Post | null {
   if (!value || typeof value !== 'object') return null
 
-  const { id, content, createdAt } = value as Record<string, unknown>
+  const { id, content, createdAt, likes, liked, favorited } = value as Record<string, unknown>
 
   if (typeof id !== 'string' || id.length === 0) return null
   if (typeof content !== 'string' || content.length === 0) return null
   if (typeof createdAt !== 'number' || !Number.isFinite(createdAt)) return null
 
-  return { id, content, createdAt }
+  return {
+    id,
+    content,
+    createdAt,
+    likes: toLikes(likes),
+    liked: toFlag(liked),
+    favorited: toFlag(favorited),
+  }
 }
 
 function pickField(body: unknown, key: string): unknown {
@@ -133,4 +156,22 @@ export async function createPost(content: string): Promise<Post> {
 
 export async function deletePost(id: string): Promise<void> {
   await request(`/posts/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+/** 点赞 / 收藏这类开关型操作：PUT 打开、DELETE 关闭，无请求体 */
+async function togglePostFlag(path: string, on: boolean): Promise<Post> {
+  const { status, body } = await request(path, { method: on ? 'PUT' : 'DELETE' })
+
+  const post = toPost(pickField(body, 'post'))
+  if (!post) throw new ApiError('INVALID_RESPONSE', status, INVALID_RESPONSE_MESSAGE)
+
+  return post
+}
+
+export function setPostLiked(id: string, liked: boolean): Promise<Post> {
+  return togglePostFlag(`/posts/${encodeURIComponent(id)}/like`, liked)
+}
+
+export function setPostFavorited(id: string, favorited: boolean): Promise<Post> {
+  return togglePostFlag(`/posts/${encodeURIComponent(id)}/favorite`, favorited)
 }

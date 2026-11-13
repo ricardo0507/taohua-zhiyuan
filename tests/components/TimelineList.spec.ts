@@ -10,6 +10,9 @@ function makePost(overrides: Partial<Post> = {}): Post {
     id: 'post-1',
     content: '一条心绪',
     createdAt: NOW - 5 * 60 * 1000,
+    likes: 0,
+    liked: false,
+    favorited: false,
     ...overrides,
   }
 }
@@ -120,5 +123,39 @@ describe('TimelineList', () => {
 
     expect(items[0].classes()).toContain('post--fresh')
     expect(items[1].classes()).not.toContain('post--fresh')
+  })
+
+  it('把点赞点击透传为 toggle-like 事件（带 post id）', async () => {
+    const posts = [makePost({ id: 'a', content: '第一条' }), makePost({ id: 'b', content: '第二条' })]
+
+    const wrapper = mount(TimelineList, {
+      props: { posts, now: NOW },
+    })
+
+    await wrapper.findAll('[data-testid="like-button"]')[1].trigger('click')
+
+    expect(wrapper.emitted('toggle-like')).toEqual([['b']])
+  })
+
+  it('把收藏点击透传为 toggle-favorite 事件（带 post id）', async () => {
+    const posts = [makePost({ id: 'a' })]
+
+    const wrapper = mount(TimelineList, {
+      props: { posts, now: NOW },
+    })
+
+    await wrapper.get('[data-testid="favorite-button"]').trigger('click')
+
+    expect(wrapper.emitted('toggle-favorite')).toEqual([['a']])
+  })
+
+  it('卡片上的点赞计数与状态来自传入数据', () => {
+    const wrapper = mount(TimelineList, {
+      props: { posts: [makePost({ likes: 4, liked: true, favorited: true })], now: NOW },
+    })
+
+    expect(wrapper.get('[data-testid="like-count"]').text()).toBe('4')
+    expect(wrapper.get('[data-testid="like-button"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-testid="favorite-button"]').attributes('aria-pressed')).toBe('true')
   })
 })

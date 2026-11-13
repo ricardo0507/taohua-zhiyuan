@@ -1,6 +1,12 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { MAX_CONTENT_LENGTH, createPost, fetchPosts } from '@/api/posts'
+import {
+  MAX_CONTENT_LENGTH,
+  createPost,
+  fetchPosts,
+  setPostFavorited,
+  setPostLiked,
+} from '@/api/posts'
 import type { Post } from '@/api/posts'
 
 // 组件统一从 store 引入契约，避免改动调用方
@@ -9,6 +15,7 @@ export type { Post }
 
 export const LOAD_ERROR_MESSAGE = '内容加载失败，请确认服务已启动'
 export const ADD_ERROR_MESSAGE = '发布失败，请确认服务已启动后重试'
+export const ACTION_ERROR_MESSAGE = '操作失败，请稍后重试'
 
 export type AddPostFailureReason = 'empty' | 'too-long' | 'request-failed'
 
@@ -26,6 +33,8 @@ export const usePostsStore = defineStore('posts', () => {
 
   const total = computed(() => posts.value.length)
   const isEmpty = computed(() => posts.value.length === 0)
+  const favoritePosts = computed(() => posts.value.filter((post) => post.favorited))
+  const favoriteCount = computed(() => favoritePosts.value.length)
 
   let inflight: Promise<boolean> | null = null
 
@@ -78,6 +87,42 @@ export const usePostsStore = defineStore('posts', () => {
     }
   }
 
+  /** 用服务端返回的最新记录替换同 id 项，产生新数组以触发响应式更新并保持顺序 */
+  function replacePost(next: Post): void {
+    posts.value = posts.value.map((item) => (item.id === next.id ? next : item))
+  }
+
+  /** 统一的开关型操作：成功返回 true，失败只记录错误文案不抛异常 */
+  async function runAction(id: string, toggle: (post: Post) => Promise<Post>): Promise<boolean> {
+    const current = posts.value.find((post) => post.id === id)
+
+    // 列表里没有这条记录时无法确定目标状态，直接按失败处理
+    if (!current) {
+      error.value = ACTION_ERROR_MESSAGE
+
+      return false
+    }
+
+    try {
+      replacePost(await toggle(current))
+      error.value = null
+
+      return true
+    } catch {
+      error.value = ACTION_ERROR_MESSAGE
+
+      return false
+    }
+  }
+
+  function toggleLike(id: string): Promise<boolean> {
+    return runAction(id, (post) => setPostLiked(id, !post.liked))
+  }
+
+  function toggleFavorite(id: string): Promise<boolean> {
+    return runAction(id, (post) => setPostFavorited(id, !post.favorited))
+  }
+
   return {
     posts,
     ready,
@@ -85,7 +130,11 @@ export const usePostsStore = defineStore('posts', () => {
     error,
     total,
     isEmpty,
+    favoritePosts,
+    favoriteCount,
     load,
     addPost,
+    toggleLike,
+    toggleFavorite,
   }
 })
