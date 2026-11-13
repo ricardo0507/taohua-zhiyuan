@@ -3,22 +3,39 @@ import { flushPromises, mount } from '@vue/test-utils'
 import type { VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import App from '@/App.vue'
-import { createPost, fetchPosts } from '@/api/posts'
+import { createPost, fetchPosts, setPostFavorited, setPostLiked } from '@/api/posts'
 import type { Post } from '@/api/posts'
+import { ACTION_ERROR_MESSAGE } from '@/stores/posts'
 
 vi.mock('@/api/posts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/posts')>()
 
-  return { ...actual, fetchPosts: vi.fn(), createPost: vi.fn() }
+  return {
+    ...actual,
+    fetchPosts: vi.fn(),
+    createPost: vi.fn(),
+    setPostLiked: vi.fn(),
+    setPostFavorited: vi.fn(),
+  }
 })
 
 const fetchPostsMock = vi.mocked(fetchPosts)
 const createPostMock = vi.mocked(createPost)
+const setPostLikedMock = vi.mocked(setPostLiked)
+const setPostFavoritedMock = vi.mocked(setPostFavorited)
 
 const NOW = 1_700_000_000_000
 
 function makePost(overrides: Partial<Post> = {}): Post {
-  return { id: 'post-1', content: '一条心绪', createdAt: NOW, ...overrides }
+  return {
+    id: 'post-1',
+    content: '一条心绪',
+    createdAt: NOW,
+    likes: 0,
+    liked: false,
+    favorited: false,
+    ...overrides,
+  }
 }
 
 function deferred<T>() {
@@ -58,6 +75,8 @@ function noticeOf(target: VueWrapper) {
 beforeEach(() => {
   fetchPostsMock.mockReset()
   createPostMock.mockReset()
+  setPostLikedMock.mockReset()
+  setPostFavoritedMock.mockReset()
   window.localStorage.clear()
 })
 
@@ -211,5 +230,147 @@ describe('App', () => {
     expect(app.get<HTMLTextAreaElement>('[data-testid="composer-input"]').element.value).toHaveLength(
       281,
     )
+  })
+})
+
+describe('App 点赞', () => {
+  it('点击点赞后计数 +1，再点一次回到 0 并派发正确的接口调用', async () => {
+    fetchPostsMock.mockResolvedValue([makePost({ id: 'a', content: '一条心绪', likes: 0 })])
+    setPostLikedMock
+      .mockResolvedValueOnce(makePost({ id: 'a', content: '一条心绪', likes: 1, liked: true }))
+      .mockResolvedValueOnce(makePost({ id: 'a', content: '一条心绪', likes: 0, liked: false }))
+
+    const app = mountApp()
+    await flushPromises()
+
+    expect(app.get('[data-testid="like-count"]').text()).toBe('0')
+
+    await app.get('[data-testid="like-button"]').trigger('click')
+    await flushPromises()
+
+    expect(setPostLikedMock).toHaveBeenNthCalledWith(1, 'a', true)
+    expect(app.get('[data-testid="like-count"]').text()).toBe('1')
+    expect(app.get('[data-testid="like-button"]').attributes('aria-pressed')).toBe('true')
+    expect(noticeOf(app).text()).toContain('已点赞')
+
+    await app.get('[data-testid="like-button"]').trigger('click')
+    await flushPromises()
+
+    expect(setPostLikedMock).toHaveBeenNthCalledWith(2, 'a', false)
+    expect(app.get('[data-testid="like-count"]').text()).toBe('0')
+    expect(app.get('[data-testid="like-button"]').attributes('aria-pressed')).toBe('false')
+    expect(noticeOf(app).text()).toContain('已取消点赞')
+    expect(app.findAll('[data-testid="post-item"]')).toHaveLength(1)
+  })
+
+  it('点赞失败时提示统一错误文案，且数据保持原样', async () => {
+    fetchPostsMock.mockResolvedValue([makePost({ id: 'a', likes: 2 })])
+    setPostLikedMock.mockRejectedValue(new Error('Failed to fetch'))
+
+    const app = mountApp()
+    await flushPromises()
+
+    await app.get('[data-testid="like-button"]').trigger('click')
+    await flushPromises()
+
+    expect(noticeOf(app).text()).toContain(ACTION_ERROR_MESSAGE)
+    expect(noticeOf(app).classes()).toContain('is-error')
+    expect(app.get('[data-testid="like-count"]').text()).toBe('2')
+    expect(app.get('[data-testid="like-button"]').attributes('aria-pressed')).toBe('false')
+  })
+})
+
+describe('App 收藏与筛选', () => {
+  it('收藏后「只看收藏」只剩该条，切回「全部」恢复全部', async () => {
+    fetchPostsMock.mockResolvedValue([
+      makePost({ id: 'a', content: '第一条', createdAt: NOW }),
+      makePost({ id: 'b', content: '第二条', createdAt: NOW - 1000 }),
+    ])
+    setPostFavoritedMock.mockResolvedValue(
+      makePost({ id: 'b', content: '第二条', createdAt: NOW - 1000, favorited: true }),
+    )
+
+    const app = mountApp()
+    await flushPromises()
+
+    expect(app.get('[data-testid="filter-all"]').attributes('aria-pressed')).toBe('true')
+    expect(app.get('[data-testid="filter-favorites"]').text().trim()).toBe('只看收藏 0')
+
+    await app.findAll('[data-testid="favorite-button"]')[1].trigger('click')
+    await flushPromises()
+
+    expect(setPostFavoritedMock).toHaveBeenCalledWith('b', true)
+    expect(app.get('[data-testid="filter-favorites"]').text().trim()).toBe('只看收藏 1')
+    expect(noticeOf(app).text()).toContain('已收藏')
+
+    await app.get('[data-testid="filter-favorites"]').trigger('click')
+
+    const items = app.findAll('[data-testid="post-item"]')
+
+    expect(app.get('[data-testid="filter-favorites"]').attributes('aria-pressed')).toBe('true')
+    expect(app.get('[data-testid="filter-all"]').attributes('aria-pressed')).toBe('false')
+    expect(items).toHaveLength(1)
+    expect(items[0].text()).toContain('第二条')
+    expect(app.get('[data-testid="post-total"]').text()).toBe('共 1 条')
+
+    await app.get('[data-testid="filter-all"]').trigger('click')
+
+    expect(app.findAll('[data-testid="post-item"]')).toHaveLength(2)
+    expect(app.get('[data-testid="post-total"]').text()).toBe('共 2 条')
+  })
+
+  it('取消收藏后从「只看收藏」中消失', async () => {
+    fetchPostsMock.mockResolvedValue([makePost({ id: 'a', favorited: true })])
+    setPostFavoritedMock.mockResolvedValue(makePost({ id: 'a', favorited: false }))
+
+    const app = mountApp()
+    await flushPromises()
+
+    await app.get('[data-testid="filter-favorites"]').trigger('click')
+    expect(app.findAll('[data-testid="post-item"]')).toHaveLength(1)
+
+    await app.get('[data-testid="favorite-button"]').trigger('click')
+    await flushPromises()
+
+    expect(app.findAll('[data-testid="post-item"]')).toHaveLength(0)
+    expect(app.get('[data-testid="post-total"]').text()).toBe('共 0 条')
+    expect(noticeOf(app).text()).toContain('已取消收藏')
+  })
+
+  it('「只看收藏」且无收藏时展示引导提示，切回「全部」后隐藏', async () => {
+    fetchPostsMock.mockResolvedValue([makePost({ id: 'a', content: '还没收藏' })])
+
+    const app = mountApp()
+    await flushPromises()
+
+    expect(app.find('[data-testid="favorites-empty"]').exists()).toBe(false)
+
+    await app.get('[data-testid="filter-favorites"]').trigger('click')
+
+    const hint = app.get('[data-testid="favorites-empty"]')
+
+    expect(hint.text()).toContain('还没有收藏')
+    expect(app.findAll('[data-testid="post-item"]')).toHaveLength(0)
+
+    await app.get('[data-testid="filter-all"]').trigger('click')
+
+    expect(app.find('[data-testid="favorites-empty"]').exists()).toBe(false)
+    expect(app.findAll('[data-testid="post-item"]')).toHaveLength(1)
+  })
+
+  it('收藏失败时提示统一错误文案，收藏数量不变', async () => {
+    fetchPostsMock.mockResolvedValue([makePost({ id: 'a' })])
+    setPostFavoritedMock.mockRejectedValue(new Error('Failed to fetch'))
+
+    const app = mountApp()
+    await flushPromises()
+
+    await app.get('[data-testid="favorite-button"]').trigger('click')
+    await flushPromises()
+
+    expect(noticeOf(app).text()).toContain(ACTION_ERROR_MESSAGE)
+    expect(noticeOf(app).classes()).toContain('is-error')
+    expect(app.get('[data-testid="filter-favorites"]').text().trim()).toBe('只看收藏 0')
+    expect(app.get('[data-testid="favorite-button"]').attributes('aria-pressed')).toBe('false')
   })
 })

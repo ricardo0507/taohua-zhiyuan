@@ -16,6 +16,12 @@ withDefaults(
   },
 )
 
+// 卡片不直接访问 store，交互事件统一由 App 处理
+const emit = defineEmits<{
+  'toggle-like': [id: string]
+  'toggle-favorite': [id: string]
+}>()
+
 const SKELETON_COUNT = 3
 </script>
 
@@ -47,6 +53,8 @@ const SKELETON_COUNT = 3
         :now="now"
         :index="index"
         :fresh="post.id === freshId"
+        @toggle-like="emit('toggle-like', $event)"
+        @toggle-favorite="emit('toggle-favorite', $event)"
       />
     </ul>
 

@@ -1,7 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, MAX_CONTENT_LENGTH, createPost, deletePost, fetchPosts } from '@/api/posts'
+import {
+  ApiError,
+  MAX_CONTENT_LENGTH,
+  createPost,
+  deletePost,
+  fetchPosts,
+  setPostFavorited,
+  setPostLiked,
+} from '@/api/posts'
 
 const fetchMock = vi.fn<typeof fetch>()
+
+/** 后端新增字段：未点赞未收藏的默认状态 */
+const IDLE_FLAGS = { likes: 0, liked: false, favorited: false }
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -47,8 +58,8 @@ describe('常量与契约', () => {
 describe('fetchPosts', () => {
   it('用 GET 请求 /api/posts 并返回接口中的列表', async () => {
     const posts = [
-      { id: 'b', content: '较新的', createdAt: 1_700_000_100_000 },
-      { id: 'a', content: '较旧的', createdAt: 1_700_000_000_000 },
+      { id: 'b', content: '较新的', createdAt: 1_700_000_100_000, ...IDLE_FLAGS },
+      { id: 'a', content: '较旧的', createdAt: 1_700_000_000_000, ...IDLE_FLAGS },
     ]
     fetchMock.mockResolvedValue(jsonResponse({ posts }))
 
@@ -75,13 +86,43 @@ describe('fetchPosts', () => {
           null,
           { content: '缺少 id' },
           { id: 'x', content: 123, createdAt: 1 },
-          { id: 'ok', content: '合法记录', createdAt: 1_700_000_000_000 },
+          { id: 'ok', content: '合法记录', createdAt: 1_700_000_000_000, ...IDLE_FLAGS },
         ],
       }),
     )
 
     await expect(fetchPosts()).resolves.toEqual([
-      { id: 'ok', content: '合法记录', createdAt: 1_700_000_000_000 },
+      { id: 'ok', content: '合法记录', createdAt: 1_700_000_000_000, ...IDLE_FLAGS },
+    ])
+  })
+
+  it('缺少点赞/收藏字段的老记录仍保留，并补齐默认值（向后兼容）', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        posts: [{ id: 'legacy', content: '老数据', createdAt: 1_700_000_000_000 }],
+      }),
+    )
+
+    await expect(fetchPosts()).resolves.toEqual([
+      { id: 'legacy', content: '老数据', createdAt: 1_700_000_000_000, ...IDLE_FLAGS },
+    ])
+  })
+
+  it('点赞数为非法值或负数时归零，布尔标记非布尔时归 false', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        posts: [
+          { id: 'a', content: '负数', createdAt: 1, likes: -3, liked: 'yes', favorited: 1 },
+          { id: 'b', content: '非数字', createdAt: 1, likes: 'many', liked: null, favorited: {} },
+          { id: 'c', content: '正常', createdAt: 1, likes: 7, liked: true, favorited: true },
+        ],
+      }),
+    )
+
+    await expect(fetchPosts()).resolves.toEqual([
+      { id: 'a', content: '负数', createdAt: 1, ...IDLE_FLAGS },
+      { id: 'b', content: '非数字', createdAt: 1, ...IDLE_FLAGS },
+      { id: 'c', content: '正常', createdAt: 1, likes: 7, liked: true, favorited: true },
     ])
   })
 
@@ -110,7 +151,7 @@ describe('fetchPosts', () => {
 
 describe('createPost', () => {
   it('以 JSON 提交 content 并返回服务端创建的记录', async () => {
-    const post = { id: 'new', content: '今天的风很温柔', createdAt: 1_700_000_200_000 }
+    const post = { id: 'new', content: '今天的风很温柔', createdAt: 1_700_000_200_000, ...IDLE_FLAGS }
     fetchMock.mockResolvedValue(jsonResponse({ post }, 201))
 
     await expect(createPost('今天的风很温柔')).resolves.toEqual(post)
@@ -192,5 +233,126 @@ describe('deletePost', () => {
 
     expect(error).toBeInstanceOf(ApiError)
     expect(error).toMatchObject({ code: 'NOT_FOUND', status: 404, message: '内容不存在' })
+  })
+})
+
+describe('setPostLiked', () => {
+  it('点赞时用 PUT 请求 /posts/:id/like，不带请求体与 Content-Type', async () => {
+    const post = { id: 'p 1', content: '一条心绪', createdAt: 1, likes: 1, liked: true, favorited: false }
+    fetchMock.mockResolvedValue(jsonResponse({ post }))
+
+    await expect(setPostLiked('p 1', true)).resolves.toEqual(post)
+
+    const { url, init } = callAt()
+    expect(url).toBe('/api/posts/p%201/like')
+    expect(init.method).toBe('PUT')
+    expect(init.body).toBeUndefined()
+    expect(headerOf(init, 'content-type')).toBeNull()
+  })
+
+  it('取消点赞时用 DELETE 请求同一路径', async () => {
+    const post = { id: 'p1', content: '一条心绪', createdAt: 1, ...IDLE_FLAGS }
+    fetchMock.mockResolvedValue(jsonResponse({ post }))
+
+    await expect(setPostLiked('p1', false)).resolves.toEqual(post)
+
+    const { url, init } = callAt()
+    expect(url).toBe('/api/posts/p1/like')
+    expect(init.method).toBe('DELETE')
+    expect(init.body).toBeUndefined()
+    expect(headerOf(init, 'content-type')).toBeNull()
+  })
+
+  it('响应缺少 post 时抛出 INVALID_RESPONSE', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ post: { id: 'p1' } }))
+
+    const error = await setPostLiked('p1', true).catch((cause: unknown) => cause)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({ code: 'INVALID_RESPONSE', status: 200 })
+  })
+
+  it('响应体不是对象时抛出 INVALID_RESPONSE', async () => {
+    fetchMock.mockResolvedValue(textResponse('ok', 200))
+
+    const error = await setPostLiked('p1', true).catch((cause: unknown) => cause)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect((error as ApiError).code).toBe('INVALID_RESPONSE')
+  })
+
+  it('返回体缺少点赞字段时补齐默认值', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ post: { id: 'p1', content: '一条心绪', createdAt: 1 } }),
+    )
+
+    await expect(setPostLiked('p1', true)).resolves.toEqual({
+      id: 'p1',
+      content: '一条心绪',
+      createdAt: 1,
+      ...IDLE_FLAGS,
+    })
+  })
+
+  it('404 NOT_FOUND 透传错误码与状态码', async () => {
+    fetchMock.mockResolvedValue(errorResponse('NOT_FOUND', '内容不存在', 404))
+
+    const error = await setPostLiked('missing', true).catch((cause: unknown) => cause)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({ code: 'NOT_FOUND', status: 404, message: '内容不存在' })
+  })
+
+  it('网络异常包装为 NETWORK_ERROR', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
+
+    const error = await setPostLiked('p1', true).catch((cause: unknown) => cause)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect((error as ApiError).code).toBe('NETWORK_ERROR')
+  })
+})
+
+describe('setPostFavorited', () => {
+  it('收藏时用 PUT 请求 /posts/:id/favorite，不带请求体与 Content-Type', async () => {
+    const post = { id: 'p1', content: '一条心绪', createdAt: 1, likes: 0, liked: false, favorited: true }
+    fetchMock.mockResolvedValue(jsonResponse({ post }))
+
+    await expect(setPostFavorited('p1', true)).resolves.toEqual(post)
+
+    const { url, init } = callAt()
+    expect(url).toBe('/api/posts/p1/favorite')
+    expect(init.method).toBe('PUT')
+    expect(init.body).toBeUndefined()
+    expect(headerOf(init, 'content-type')).toBeNull()
+  })
+
+  it('取消收藏时用 DELETE 请求同一路径', async () => {
+    const post = { id: 'p 1', content: '一条心绪', createdAt: 1, ...IDLE_FLAGS }
+    fetchMock.mockResolvedValue(jsonResponse({ post }))
+
+    await expect(setPostFavorited('p 1', false)).resolves.toEqual(post)
+
+    const { url, init } = callAt()
+    expect(url).toBe('/api/posts/p%201/favorite')
+    expect(init.method).toBe('DELETE')
+  })
+
+  it('响应结构不合法时抛出 INVALID_RESPONSE', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+
+    const error = await setPostFavorited('p1', true).catch((cause: unknown) => cause)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect((error as ApiError).code).toBe('INVALID_RESPONSE')
+  })
+
+  it('500 时透传错误码', async () => {
+    fetchMock.mockResolvedValue(errorResponse('INTERNAL_ERROR', '服务器开小差了', 500))
+
+    const error = await setPostFavorited('p1', true).catch((cause: unknown) => cause)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({ code: 'INTERNAL_ERROR', status: 500, message: '服务器开小差了' })
   })
 })

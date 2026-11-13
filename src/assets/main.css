@@ -586,6 +586,124 @@ button, textarea { font: inherit; color: inherit; }
   .app { padding-left: 12px; padding-right: 12px; }
 }
 
+/* ---------- 点赞 / 收藏 / 筛选 pill ---------- */
+.post__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(240, 169, 184, .55);
+  background: rgba(255, 255, 255, .78);
+  color: var(--peach-500);
+  font-size: 12.5px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: transform .2s var(--ease), background .24s var(--ease),
+    border-color .24s var(--ease), color .24s var(--ease), box-shadow .24s var(--ease);
+}
+
+.pill__icon {
+  font-size: 13px;
+  line-height: 1;
+  transition: transform .24s var(--ease);
+}
+
+.pill:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 244, 246, .96);
+  border-color: rgba(242, 120, 159, .72);
+  box-shadow: 0 6px 14px -10px rgba(232, 101, 127, .8);
+}
+
+.pill:hover .pill__icon {
+  transform: scale(1.12);
+}
+
+.pill:active {
+  transform: translateY(0) scale(.97);
+}
+
+.pill:focus-visible {
+  outline: 2px solid rgba(232, 101, 127, .58);
+  outline-offset: 2px;
+}
+
+.pill.is-active {
+  background: linear-gradient(135deg, var(--peach-400) 0%, var(--peach-500) 100%);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 6px 16px -10px rgba(232, 101, 127, .95);
+}
+
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 6px;
+}
+
+.filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(240, 169, 184, .5);
+  background: rgba(255, 255, 255, .72);
+  color: var(--ink-500);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .04em;
+  cursor: pointer;
+  transition: transform .2s var(--ease), background .24s var(--ease),
+    border-color .24s var(--ease), color .24s var(--ease), box-shadow .24s var(--ease);
+}
+
+.filter:hover {
+  transform: translateY(-1px);
+  background: #fff;
+  border-color: rgba(242, 120, 159, .7);
+  color: var(--peach-500);
+}
+
+.filter:active {
+  transform: translateY(0) scale(.98);
+}
+
+.filter:focus-visible {
+  outline: 2px solid rgba(232, 101, 127, .58);
+  outline-offset: 2px;
+}
+
+.filter.is-active {
+  background: linear-gradient(135deg, var(--peach-400) 0%, var(--peach-500) 100%);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 8px 18px -12px rgba(232, 101, 127, .95);
+}
+
+.filters__empty {
+  margin: 0 6px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px dashed rgba(240, 169, 184, .6);
+  background: rgba(255, 255, 255, .58);
+  color: var(--ink-500);
+  font-size: 12.5px;
+  line-height: 1.6;
+  text-align: center;
+  letter-spacing: .02em;
+}
+
 /* ---------- 可访问性：减少动效 ---------- */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -596,4 +714,13 @@ button, textarea { font: inherit; color: inherit; }
     transition-duration: .001ms !important;
   }
   .petals { display: none; }
+
+  /* 动效偏好被禁用时不再做位移与缩放反馈 */
+  .pill:hover,
+  .pill:active,
+  .pill:hover .pill__icon,
+  .filter:hover,
+  .filter:active {
+    transform: none;
+  }
 }

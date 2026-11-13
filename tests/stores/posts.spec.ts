@@ -1,20 +1,36 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { createPost, fetchPosts } from '@/api/posts'
-import { MAX_CONTENT_LENGTH, usePostsStore } from '@/stores/posts'
+import { createPost, fetchPosts, setPostFavorited, setPostLiked } from '@/api/posts'
+import { ACTION_ERROR_MESSAGE, MAX_CONTENT_LENGTH, usePostsStore } from '@/stores/posts'
 import type { Post } from '@/stores/posts'
 
 vi.mock('@/api/posts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/posts')>()
 
-  return { ...actual, fetchPosts: vi.fn(), createPost: vi.fn() }
+  return {
+    ...actual,
+    fetchPosts: vi.fn(),
+    createPost: vi.fn(),
+    setPostLiked: vi.fn(),
+    setPostFavorited: vi.fn(),
+  }
 })
 
 const fetchPostsMock = vi.mocked(fetchPosts)
 const createPostMock = vi.mocked(createPost)
+const setPostLikedMock = vi.mocked(setPostLiked)
+const setPostFavoritedMock = vi.mocked(setPostFavorited)
 
 function makePost(overrides: Partial<Post> = {}): Post {
-  return { id: 'post-1', content: '一条心绪', createdAt: 1_700_000_000_000, ...overrides }
+  return {
+    id: 'post-1',
+    content: '一条心绪',
+    createdAt: 1_700_000_000_000,
+    likes: 0,
+    liked: false,
+    favorited: false,
+    ...overrides,
+  }
 }
 
 function deferred<T>() {
@@ -28,15 +44,30 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+async function loadWith(posts: Post[]): Promise<ReturnType<typeof usePostsStore>> {
+  fetchPostsMock.mockResolvedValue(posts)
+
+  const store = usePostsStore()
+  await store.load()
+
+  return store
+}
+
 beforeEach(() => {
   setActivePinia(createPinia())
   fetchPostsMock.mockReset()
   createPostMock.mockReset()
+  setPostLikedMock.mockReset()
+  setPostFavoritedMock.mockReset()
 })
 
 describe('常量导出', () => {
   it('store 透出与后端一致的最大长度', () => {
     expect(MAX_CONTENT_LENGTH).toBe(280)
+  })
+
+  it('操作失败统一使用固定文案', () => {
+    expect(ACTION_ERROR_MESSAGE).toBe('操作失败，请稍后重试')
   })
 })
 
@@ -215,5 +246,138 @@ describe('addPost', () => {
 
     expect(store.error).toBeNull()
     expect(store.posts).toHaveLength(1)
+  })
+})
+
+describe('toggleLike', () => {
+  it('未点赞时调用 setPostLiked(id, true)，并用服务端结果替换列表项且保持顺序', async () => {
+    const store = await loadWith([
+      makePost({ id: 'a', content: '第一条' }),
+      makePost({ id: 'b', content: '第二条' }),
+      makePost({ id: 'c', content: '第三条' }),
+    ])
+    setPostLikedMock.mockResolvedValue(makePost({ id: 'b', content: '第二条', likes: 1, liked: true }))
+
+    await expect(store.toggleLike('b')).resolves.toBe(true)
+
+    expect(setPostLikedMock).toHaveBeenCalledWith('b', true)
+    expect(store.posts.map((post) => post.id)).toEqual(['a', 'b', 'c'])
+    expect(store.posts[1]).toMatchObject({ id: 'b', likes: 1, liked: true })
+    expect(store.posts[0].liked).toBe(false)
+    expect(store.error).toBeNull()
+  })
+
+  it('已点赞时调用 setPostLiked(id, false)，计数与标记跟随服务端', async () => {
+    const store = await loadWith([makePost({ id: 'a', likes: 3, liked: true })])
+    setPostLikedMock.mockResolvedValue(makePost({ id: 'a', likes: 2, liked: false }))
+
+    await expect(store.toggleLike('a')).resolves.toBe(true)
+
+    expect(setPostLikedMock).toHaveBeenCalledWith('a', false)
+    expect(store.posts[0]).toMatchObject({ likes: 2, liked: false })
+  })
+
+  it('替换列表项会产生新数组，便于响应式更新', async () => {
+    const store = await loadWith([makePost({ id: 'a' })])
+    const before = store.posts
+    setPostLikedMock.mockResolvedValue(makePost({ id: 'a', likes: 1, liked: true }))
+
+    await store.toggleLike('a')
+
+    expect(store.posts).not.toBe(before)
+  })
+
+  it('请求失败时返回 false、写入统一错误文案且不改动列表', async () => {
+    const store = await loadWith([makePost({ id: 'a', content: '保持原样' })])
+    setPostLikedMock.mockRejectedValue(new Error('Failed to fetch'))
+
+    await expect(store.toggleLike('a')).resolves.toBe(false)
+
+    expect(store.error).toBe(ACTION_ERROR_MESSAGE)
+    expect(store.posts[0]).toMatchObject({ id: 'a', likes: 0, liked: false })
+  })
+
+  it('失败后再成功会清除错误文案', async () => {
+    const store = await loadWith([makePost({ id: 'a' })])
+    setPostLikedMock.mockRejectedValueOnce(new Error('boom'))
+    setPostLikedMock.mockResolvedValueOnce(makePost({ id: 'a', likes: 1, liked: true }))
+
+    await store.toggleLike('a')
+    expect(store.error).toBe(ACTION_ERROR_MESSAGE)
+
+    await expect(store.toggleLike('a')).resolves.toBe(true)
+    expect(store.error).toBeNull()
+  })
+
+  it('id 不存在时不发请求，返回 false 并写错误文案', async () => {
+    const store = await loadWith([makePost({ id: 'a' })])
+
+    await expect(store.toggleLike('missing')).resolves.toBe(false)
+
+    expect(setPostLikedMock).not.toHaveBeenCalled()
+    expect(store.error).toBe(ACTION_ERROR_MESSAGE)
+    expect(store.posts).toHaveLength(1)
+  })
+})
+
+describe('toggleFavorite', () => {
+  it('未收藏时调用 setPostFavorited(id, true)，收藏列表随之更新', async () => {
+    const store = await loadWith([
+      makePost({ id: 'a', content: '第一条' }),
+      makePost({ id: 'b', content: '第二条' }),
+    ])
+    setPostFavoritedMock.mockResolvedValue(makePost({ id: 'a', content: '第一条', favorited: true }))
+
+    await expect(store.toggleFavorite('a')).resolves.toBe(true)
+
+    expect(setPostFavoritedMock).toHaveBeenCalledWith('a', true)
+    expect(store.posts.map((post) => post.id)).toEqual(['a', 'b'])
+    expect(store.posts[0].favorited).toBe(true)
+    expect(store.favoritePosts.map((post) => post.id)).toEqual(['a'])
+    expect(store.favoriteCount).toBe(1)
+  })
+
+  it('已收藏时调用 setPostFavorited(id, false)，并从收藏列表移除', async () => {
+    const store = await loadWith([makePost({ id: 'a', favorited: true })])
+    expect(store.favoriteCount).toBe(1)
+
+    setPostFavoritedMock.mockResolvedValue(makePost({ id: 'a', favorited: false }))
+
+    await expect(store.toggleFavorite('a')).resolves.toBe(true)
+
+    expect(setPostFavoritedMock).toHaveBeenCalledWith('a', false)
+    expect(store.favoritePosts).toEqual([])
+    expect(store.favoriteCount).toBe(0)
+  })
+
+  it('请求失败时返回 false 且保持原收藏状态', async () => {
+    const store = await loadWith([makePost({ id: 'a', favorited: true })])
+    setPostFavoritedMock.mockRejectedValue(new Error('boom'))
+
+    await expect(store.toggleFavorite('a')).resolves.toBe(false)
+
+    expect(store.error).toBe(ACTION_ERROR_MESSAGE)
+    expect(store.favoriteCount).toBe(1)
+    expect(store.posts[0].favorited).toBe(true)
+  })
+
+  it('id 不存在时不发请求，返回 false 并写错误文案', async () => {
+    const store = await loadWith([makePost({ id: 'a' })])
+
+    await expect(store.toggleFavorite('missing')).resolves.toBe(false)
+
+    expect(setPostFavoritedMock).not.toHaveBeenCalled()
+    expect(store.error).toBe(ACTION_ERROR_MESSAGE)
+  })
+
+  it('favoritePosts 只包含已收藏项且保持原顺序', async () => {
+    const store = await loadWith([
+      makePost({ id: 'a', favorited: true }),
+      makePost({ id: 'b', favorited: false }),
+      makePost({ id: 'c', favorited: true }),
+    ])
+
+    expect(store.favoritePosts.map((post) => post.id)).toEqual(['a', 'c'])
+    expect(store.favoriteCount).toBe(2)
   })
 })
