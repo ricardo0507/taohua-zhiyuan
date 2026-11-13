@@ -9,10 +9,13 @@ withDefaults(
     now: number
     freshId?: string | null
     loading?: boolean
+    /** 由外部（如「只看收藏」筛选）接管空状态时置真，避免两处空提示同时出现 */
+    hideEmpty?: boolean
   }>(),
   {
     freshId: null,
     loading: false,
+    hideEmpty: false,
   },
 )
 
@@ -58,7 +61,7 @@ const SKELETON_COUNT = 3
       />
     </ul>
 
-    <EmptyState v-if="!loading && posts.length === 0" />
+    <EmptyState v-if="!loading && !hideEmpty && posts.length === 0" />
   </section>
 </template>
 

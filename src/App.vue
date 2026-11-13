@@ -37,8 +37,13 @@ const isFavoritesOnly = computed(() => filter.value === 'favorites')
 const visiblePosts = computed(() =>
   isFavoritesOnly.value ? postsStore.favoritePosts : postsStore.posts,
 )
+/** 整页还有内容、只是没有收藏时才提示引导；整页为空交给时间线的空状态 */
 const showFavoritesEmpty = computed(
-  () => isFavoritesOnly.value && !isLoading.value && postsStore.favoriteCount === 0,
+  () =>
+    isFavoritesOnly.value &&
+    !isLoading.value &&
+    postsStore.favoriteCount === 0 &&
+    postsStore.posts.length > 0,
 )
 
 // 首屏从接口拉取内容
@@ -152,6 +157,7 @@ async function handleToggleFavorite(id: string): Promise<void> {
         :now="now"
         :fresh-id="freshId"
         :loading="isLoading"
+        :hide-empty="showFavoritesEmpty"
         @toggle-like="handleToggleLike"
         @toggle-favorite="handleToggleFavorite"
       />

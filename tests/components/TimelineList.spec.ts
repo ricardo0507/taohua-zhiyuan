@@ -28,6 +28,15 @@ describe('TimelineList', () => {
     expect(wrapper.findAll('[data-testid="post-item"]')).toHaveLength(0)
   })
 
+  it('hideEmpty 为 true 时即使没有内容也不展示整页空状态', () => {
+    const wrapper = mount(TimelineList, {
+      props: { posts: [], now: NOW, hideEmpty: true },
+    })
+
+    expect(wrapper.get('[data-testid="post-total"]').text()).toBe('共 0 条')
+    expect(wrapper.find('[data-testid="empty-state"]').exists()).toBe(false)
+  })
+
   it('按传入顺序渲染卡片并显示总数', () => {
     const posts = [
       makePost({ id: 'a', content: '最新的' }),

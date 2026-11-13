@@ -358,6 +358,30 @@ describe('App 收藏与筛选', () => {
     expect(app.findAll('[data-testid="post-item"]')).toHaveLength(1)
   })
 
+  it('「只看收藏」且无收藏时只展示收藏引导，不展示整页空状态', async () => {
+    fetchPostsMock.mockResolvedValue([makePost({ id: 'a', content: '还没收藏' })])
+
+    const app = mountApp()
+    await flushPromises()
+
+    await app.get('[data-testid="filter-favorites"]').trigger('click')
+
+    expect(app.find('[data-testid="favorites-empty"]').exists()).toBe(true)
+    expect(app.find('[data-testid="empty-state"]').exists()).toBe(false)
+  })
+
+  it('整页没有任何内容时「只看收藏」展示整页空状态而不是收藏引导', async () => {
+    fetchPostsMock.mockResolvedValue([])
+
+    const app = mountApp()
+    await flushPromises()
+
+    await app.get('[data-testid="filter-favorites"]').trigger('click')
+
+    expect(app.find('[data-testid="empty-state"]').exists()).toBe(true)
+    expect(app.find('[data-testid="favorites-empty"]').exists()).toBe(false)
+  })
+
   it('收藏失败时提示统一错误文案，收藏数量不变', async () => {
     fetchPostsMock.mockResolvedValue([makePost({ id: 'a' })])
     setPostFavoritedMock.mockRejectedValue(new Error('Failed to fetch'))
