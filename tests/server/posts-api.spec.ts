@@ -9,6 +9,9 @@ interface ApiPost {
   id: string
   content: string
   createdAt: number
+  likes: number
+  liked: boolean
+  favorited: boolean
 }
 
 function jsonPost(body: string): RequestInit {
@@ -30,6 +33,30 @@ async function expectJsonContentType(response: Response): Promise<unknown> {
 
 function expectError(payload: unknown, code: string, message: string): void {
   expect(payload).toEqual({ error: { code, message } })
+}
+
+/** 走 HTTP 接口建一条内容，返回服务端落库后的完整记录 */
+async function createPost(app: ReturnType<typeof createApp>, content = '桃花源记'): Promise<ApiPost> {
+  const response = await app.request('/api/posts', jsonPost(JSON.stringify({ content })))
+  const payload = (await response.json()) as { post: ApiPost }
+
+  return payload.post
+}
+
+function findByContent(posts: ApiPost[], content: string): ApiPost | undefined {
+  return posts.find((post) => post.content === content)
+}
+
+function expectInteractionState(
+  post: ApiPost,
+  expected: { likes: number; liked: boolean; favorited: boolean },
+): void {
+  expect(post.likes).toBe(expected.likes)
+  expect(post.liked).toBe(expected.liked)
+  expect(post.favorited).toBe(expected.favorited)
+  // 契约要求：likes 永远是非负整数
+  expect(Number.isInteger(post.likes)).toBe(true)
+  expect(post.likes).toBeGreaterThanOrEqual(0)
 }
 
 afterEach(() => {
@@ -73,6 +100,18 @@ describe('GET /api/posts', () => {
     expect(payload.posts.map((post) => post.createdAt)).toEqual([2_000, 1_000])
   })
 
+  it('列表中的每条记录都带初始互动状态字段', async () => {
+    const app = createApp()
+    await createPost(app)
+
+    const payload = (await (await app.request('/api/posts')).json()) as { posts: ApiPost[] }
+    const [first] = payload.posts
+    expect(first).toBeDefined()
+    if (!first) return
+
+    expectInteractionState(first, { likes: 0, liked: false, favorited: false })
+  })
+
   it('不同的 app 实例之间数据互相隔离', async () => {
     const first = createApp()
     const second = createApp()
@@ -113,7 +152,17 @@ describe('POST /api/posts', () => {
     expect(payload.post.id).toMatch(UUID_V4)
     expect(payload.post.content).toBe('采菊东篱下')
     expect(payload.post.createdAt).toBe(1_700_000_000_000)
-    expect(Object.keys(payload.post)).toEqual(['id', 'content', 'createdAt'])
+    expect(Object.keys(payload.post)).toEqual([
+      'id',
+      'content',
+      'createdAt',
+      'likes',
+      'liked',
+      'favorited',
+    ])
+    expect(payload.post.likes).toBe(0)
+    expect(payload.post.liked).toBe(false)
+    expect(payload.post.favorited).toBe(false)
     expect(response.headers.get('location')).toBe(`/api/posts/${payload.post.id}`)
   })
 
@@ -219,9 +268,11 @@ describe('GET /api/posts/:id', () => {
     ).json()) as { post: ApiPost }
 
     const response = await app.request(`/api/posts/${created.post.id}`)
+    const payload = (await expectJsonContentType(response)) as { post: ApiPost }
 
     expect(response.status).toBe(200)
-    expect(await expectJsonContentType(response)).toEqual({ post: created.post })
+    expect(payload).toEqual({ post: created.post })
+    expectInteractionState(payload.post, { likes: 0, liked: false, favorited: false })
   })
 
   it('id 不存在返回 404 NOT_FOUND', async () => {
@@ -269,6 +320,211 @@ describe('DELETE /api/posts/:id', () => {
 
     expect(response.status).toBe(404)
     expectError(await response.json(), 'NOT_FOUND', '内容不存在')
+  })
+})
+
+describe('PUT /api/posts/:id/like', () => {
+  it('点赞成功返回 200 与更新后的记录', async () => {
+    const app = createApp()
+    const created = await createPost(app)
+
+    const response = await app.request(`/api/posts/${created.id}/like`, { method: 'PUT' })
+    const payload = (await expectJsonContentType(response)) as { post: ApiPost }
+
+    expect(response.status).toBe(200)
+    expect(payload.post.id).toBe(created.id)
+    expect(payload.post.content).toBe(created.content)
+    expect(payload.post.createdAt).toBe(created.createdAt)
+    expectInteractionState(payload.post, { likes: 1, liked: true, favorited: false })
+    expect(Object.keys(payload.post)).toEqual([
+      'id',
+      'content',
+      'createdAt',
+      'likes',
+      'liked',
+      'favorited',
+    ])
+  })
+
+  it('重复点赞保持幂等，likes 仍为 1', async () => {
+    const app = createApp()
+    const created = await createPost(app)
+
+    await app.request(`/api/posts/${created.id}/like`, { method: 'PUT' })
+    const repeated = await app.request(`/api/posts/${created.id}/like`, { method: 'PUT' })
+    const payload = (await repeated.json()) as { post: ApiPost }
+
+    expect(repeated.status).toBe(200)
+    expect(payload.post.likes).toBe(1)
+    expect(payload.post.liked).toBe(true)
+  })
+
+  it('点赞状态在列表与单条接口中同步可见', async () => {
+    const app = createApp()
+    const created = await createPost(app)
+
+    await app.request(`/api/posts/${created.id}/like`, { method: 'PUT' })
+
+    const single = (await (await app.request(`/api/posts/${created.id}`)).json()) as {
+      post: ApiPost
+    }
+    const listed = (await (await app.request('/api/posts')).json()) as { posts: ApiPost[] }
+
+    expectInteractionState(single.post, { likes: 1, liked: true, favorited: false })
+    const target = findByContent(listed.posts, created.content)
+    expect(target).toBeDefined()
+    if (target) expectInteractionState(target, { likes: 1, liked: true, favorited: false })
+  })
+
+  it('id 不存在返回 404 NOT_FOUND', async () => {
+    const app = createApp()
+
+    const response = await app.request('/api/posts/not-exist/like', { method: 'PUT' })
+
+    expect(response.status).toBe(404)
+    expectError(await expectJsonContentType(response), 'NOT_FOUND', '内容不存在')
+  })
+
+  it('删除记录后点赞返回 404 NOT_FOUND', async () => {
+    const app = createApp()
+    const created = await createPost(app)
+
+    await app.request(`/api/posts/${created.id}`, { method: 'DELETE' })
+    const response = await app.request(`/api/posts/${created.id}/like`, { method: 'PUT' })
+
+    expect(response.status).toBe(404)
+    expectError(await expectJsonContentType(response), 'NOT_FOUND', '内容不存在')
+  })
+
+  it('不支持的 POST 方法仍落入兜底 404', async () => {
+    const app = createApp()
+    const created = await createPost(app)
+
+    const response = await app.request(`/api/posts/${created.id}/like`, { method: 'POST' })
+
+    expect(response.status).toBe(404)
+    expectError(await expectJsonContentType(response), 'NOT_FOUND', '接口不存在')
+  })
+})
+
+describe('DELETE /api/posts/:id/like', () => {
+  it('取消点赞成功返回 200 且 likes 为 0', async () => {
+    const app = createApp()
+    const created = await createPost(app)
+
+    await app.request(`/api/posts/${created.id}/like`, { method: 'PUT' })
+    const response = await app.request(`/api/posts/${created.id}/like`, { method: 'DELETE' })
+    const payload = (await expectJsonContentType(response)) as { post: ApiPost }
+
+    expect(response.status).toBe(200)
+    expectInteractionState(payload.post, { likes: 0, liked: false, favorited: false })
+  })
+
+  it('未点赞时取消点赞仍返回 200 且 likes 为 0', async () => {
+    const app = createApp()
+    const created = await createPost(app)
+
+    const response = await app.request(`/api/posts/${created.id}/like`, { method: 'DELETE' })
+    const payload = (await expectJsonContentType(response)) as { post: ApiPost }
+
+    expect(response.status).toBe(200)
+    expectInteractionState(payload.post, { likes: 0, liked: false, favorited: false })
+  })
+
+  it('id 不存在返回 404 NOT_FOUND', async () => {
+    const app = createApp()
+
+    const response = await app.request('/api/posts/not-exist/like', { method: 'DELETE' })
+
+    expect(response.status).toBe(404)
+    expectError(await expectJsonContentType(response), 'NOT_FOUND', '内容不存在')
+  })
+})
+
+describe('PUT /api/posts/:id/favorite', () => {
+  it('收藏成功返回 200 与更新后的记录', async () => {
+    const app = createApp()
+    const created = await createPost(app)
+
+    const response = await app.request(`/api/posts/${created.id}/favorite`, { method: 'PUT' })
+    const payload = (await expectJsonContentType(response)) as { post: ApiPost }
+
+    expect(response.status).toBe(200)
+    expect(payload.post.id).toBe(created.id)
+    expectInteractionState(payload.post, { likes: 0, liked: false, favorited: true })
+  })
+
+  it('重复收藏保持幂等', async () => {
+    const app = createApp()
+    const created = await createPost(app)
+
+    await app.request(`/api/posts/${created.id}/favorite`, { method: 'PUT' })
+    const repeated = await app.request(`/api/posts/${created.id}/favorite`, { method: 'PUT' })
+    const payload = (await repeated.json()) as { post: ApiPost }
+
+    expect(repeated.status).toBe(200)
+    expectInteractionState(payload.post, { likes: 0, liked: false, favorited: true })
+  })
+
+  it('id 不存在返回 404 NOT_FOUND', async () => {
+    const app = createApp()
+
+    const response = await app.request('/api/posts/not-exist/favorite', { method: 'PUT' })
+
+    expect(response.status).toBe(404)
+    expectError(await expectJsonContentType(response), 'NOT_FOUND', '内容不存在')
+  })
+})
+
+describe('DELETE /api/posts/:id/favorite', () => {
+  it('取消收藏成功返回 200 且 favorited 为 false', async () => {
+    const app = createApp()
+    const created = await createPost(app)
+
+    await app.request(`/api/posts/${created.id}/favorite`, { method: 'PUT' })
+    const response = await app.request(`/api/posts/${created.id}/favorite`, { method: 'DELETE' })
+    const payload = (await expectJsonContentType(response)) as { post: ApiPost }
+
+    expect(response.status).toBe(200)
+    expectInteractionState(payload.post, { likes: 0, liked: false, favorited: false })
+  })
+
+  it('未收藏时取消收藏仍返回 200', async () => {
+    const app = createApp()
+    const created = await createPost(app)
+
+    const response = await app.request(`/api/posts/${created.id}/favorite`, { method: 'DELETE' })
+    const payload = (await expectJsonContentType(response)) as { post: ApiPost }
+
+    expect(response.status).toBe(200)
+    expectInteractionState(payload.post, { likes: 0, liked: false, favorited: false })
+  })
+
+  it('id 不存在返回 404 NOT_FOUND', async () => {
+    const app = createApp()
+
+    const response = await app.request('/api/posts/not-exist/favorite', { method: 'DELETE' })
+
+    expect(response.status).toBe(404)
+    expectError(await expectJsonContentType(response), 'NOT_FOUND', '内容不存在')
+  })
+})
+
+describe('点赞与收藏互不影响', () => {
+  it('点赞后收藏，两个状态各自保持', async () => {
+    const app = createApp()
+    const created = await createPost(app)
+
+    await app.request(`/api/posts/${created.id}/like`, { method: 'PUT' })
+    const favorited = await app.request(`/api/posts/${created.id}/favorite`, { method: 'PUT' })
+    const payload = (await favorited.json()) as { post: ApiPost }
+
+    expectInteractionState(payload.post, { likes: 1, liked: true, favorited: true })
+
+    const unliked = await app.request(`/api/posts/${created.id}/like`, { method: 'DELETE' })
+    const afterUnlike = (await unliked.json()) as { post: ApiPost }
+
+    expectInteractionState(afterUnlike.post, { likes: 0, liked: false, favorited: true })
   })
 })
 

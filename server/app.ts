@@ -61,6 +61,35 @@ export function createApp(store: PostStore = createPostStore()) {
     return c.json({ post })
   })
 
+  // 点赞 / 收藏：单用户演示，服务端全局标记；接口不读取请求体，幂等
+  app.put('/api/posts/:id/like', (c) => {
+    const post = store.setLiked(c.req.param('id'), true)
+    if (!post) return c.json(errorPayload('NOT_FOUND', NOT_FOUND_MESSAGE), 404)
+
+    return c.json({ post })
+  })
+
+  app.delete('/api/posts/:id/like', (c) => {
+    const post = store.setLiked(c.req.param('id'), false)
+    if (!post) return c.json(errorPayload('NOT_FOUND', NOT_FOUND_MESSAGE), 404)
+
+    return c.json({ post })
+  })
+
+  app.put('/api/posts/:id/favorite', (c) => {
+    const post = store.setFavorited(c.req.param('id'), true)
+    if (!post) return c.json(errorPayload('NOT_FOUND', NOT_FOUND_MESSAGE), 404)
+
+    return c.json({ post })
+  })
+
+  app.delete('/api/posts/:id/favorite', (c) => {
+    const post = store.setFavorited(c.req.param('id'), false)
+    if (!post) return c.json(errorPayload('NOT_FOUND', NOT_FOUND_MESSAGE), 404)
+
+    return c.json({ post })
+  })
+
   app.delete('/api/posts/:id', (c) => {
     if (!store.remove(c.req.param('id'))) {
       return c.json(errorPayload('NOT_FOUND', NOT_FOUND_MESSAGE), 404)
