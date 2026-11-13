@@ -1,6 +1,12 @@
-# CodeBuddy 本地计划/过程文档，不入库
-.codebuddy/plans/
+# 依赖与构建产物
+node_modules/
+dist/
 
-# 系统与编辑器杂项
+# 本地杂项
+*.local
+*.log
 .DS_Store
 Thumbs.db
+
+# CodeBuddy 本地计划/过程文档，不入库
+.codebuddy/plans/
