@@ -10,3 +10,8 @@ Thumbs.db
 
 # CodeBuddy 本地计划/过程文档，不入库
 .codebuddy/plans/
+
+# 浏览器验收临时产物
+.playwright-cli/
+accept-*.yaml
+acceptance*.png

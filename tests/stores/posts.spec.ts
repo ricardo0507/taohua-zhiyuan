@@ -1,200 +1,219 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { MAX_CONTENT_LENGTH, STORAGE_KEY, usePostsStore } from '@/stores/posts'
+import { createPost, fetchPosts } from '@/api/posts'
+import { MAX_CONTENT_LENGTH, usePostsStore } from '@/stores/posts'
+import type { Post } from '@/stores/posts'
 
-function readRaw() {
-  return JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? 'null')
+vi.mock('@/api/posts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/posts')>()
+
+  return { ...actual, fetchPosts: vi.fn(), createPost: vi.fn() }
+})
+
+const fetchPostsMock = vi.mocked(fetchPosts)
+const createPostMock = vi.mocked(createPost)
+
+function makePost(overrides: Partial<Post> = {}): Post {
+  return { id: 'post-1', content: '一条心绪', createdAt: 1_700_000_000_000, ...overrides }
 }
 
-describe('posts store', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    window.localStorage.clear()
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
   })
 
-  describe('hydrate', () => {
-    it('从 localStorage 读取已保存的内容并标记为就绪', () => {
-      window.localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify([
-          { id: 'a', content: '第一条', createdAt: 1_700_000_000_000 },
-          { id: 'b', content: '第二条', createdAt: 1_700_000_100_000 },
-        ]),
-      )
+  return { promise, resolve, reject }
+}
 
-      const store = usePostsStore()
-      store.hydrate()
+beforeEach(() => {
+  setActivePinia(createPinia())
+  fetchPostsMock.mockReset()
+  createPostMock.mockReset()
+})
 
-      expect(store.ready).toBe(true)
-      expect(store.storageAvailable).toBe(true)
-      expect(store.posts).toHaveLength(2)
-      expect(store.total).toBe(2)
-      expect(store.isEmpty).toBe(false)
-    })
+describe('常量导出', () => {
+  it('store 透出与后端一致的最大长度', () => {
+    expect(MAX_CONTENT_LENGTH).toBe(280)
+  })
+})
 
-    it('过滤结构不完整的脏数据并归一化字段', () => {
-      window.localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify([
-          null,
-          { content: '' },
-          { content: 123 },
-          { id: 42, content: '有效内容', createdAt: 'not-a-number', extra: true },
-        ]),
-      )
+describe('load', () => {
+  it('拉取列表后填充状态并标记就绪', async () => {
+    const posts = [makePost({ id: 'b', content: '新的' }), makePost({ id: 'a', content: '旧的' })]
+    fetchPostsMock.mockResolvedValue(posts)
 
-      const store = usePostsStore()
-      store.hydrate()
+    const store = usePostsStore()
+    await expect(store.load()).resolves.toBe(true)
 
-      expect(store.posts).toHaveLength(1)
-      expect(store.posts[0]).toMatchObject({ id: '42', content: '有效内容' })
-      expect(typeof store.posts[0].createdAt).toBe('number')
-      expect(Object.keys(store.posts[0])).toEqual(['id', 'content', 'createdAt'])
-    })
-
-    it('localStorage 内容不是合法 JSON 时返回空列表且不报错', () => {
-      window.localStorage.setItem(STORAGE_KEY, '{oops')
-
-      const store = usePostsStore()
-      store.hydrate()
-
-      expect(store.posts).toEqual([])
-      expect(store.isEmpty).toBe(true)
-      expect(store.storageAvailable).toBe(true)
-    })
-
-    it('存储内容不是数组时返回空列表', () => {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ content: 'x' }))
-
-      const store = usePostsStore()
-      store.hydrate()
-
-      expect(store.posts).toEqual([])
-    })
-
-    it('localStorage 不可用时降级为内存数据并标记存储不可用', () => {
-      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
-        throw new Error('SecurityError')
-      })
-
-      const store = usePostsStore()
-      store.hydrate()
-
-      expect(store.posts).toEqual([])
-      expect(store.storageAvailable).toBe(false)
-      expect(store.ready).toBe(true)
-    })
+    expect(fetchPostsMock).toHaveBeenCalledTimes(1)
+    expect(store.posts.map((post) => post.id)).toEqual(['b', 'a'])
+    expect(store.total).toBe(2)
+    expect(store.isEmpty).toBe(false)
+    expect(store.ready).toBe(true)
+    expect(store.loading).toBe(false)
+    expect(store.error).toBeNull()
   })
 
-  describe('addPost', () => {
-    it('去除首尾空白并把最新内容放在最前面', () => {
-      const store = usePostsStore()
-      store.hydrate()
+  it('请求进行中 loading 为 true 且尚未就绪', async () => {
+    const request = deferred<Post[]>()
+    fetchPostsMock.mockReturnValue(request.promise)
 
-      const first = store.addPost('  第一条心绪  ')
-      const second = store.addPost('第二条心绪')
+    const store = usePostsStore()
+    const pending = store.load()
 
-      expect(first).toMatchObject({ ok: true, persisted: true })
-      expect(second).toMatchObject({ ok: true, persisted: true })
-      expect(store.posts.map((post) => post.content)).toEqual(['第二条心绪', '第一条心绪'])
-      expect(readRaw().map((post: { content: string }) => post.content)).toEqual([
-        '第二条心绪',
-        '第一条心绪',
-      ])
+    expect(store.loading).toBe(true)
+    expect(store.ready).toBe(false)
+
+    request.resolve([])
+    await expect(pending).resolves.toBe(true)
+
+    expect(store.loading).toBe(false)
+    expect(store.ready).toBe(true)
+    expect(store.isEmpty).toBe(true)
+  })
+
+  it('请求失败时记录错误文案、标记就绪且不抛出异常', async () => {
+    fetchPostsMock.mockRejectedValue(new Error('connect ECONNREFUSED'))
+
+    const store = usePostsStore()
+
+    await expect(store.load()).resolves.toBe(false)
+
+    expect(store.posts).toEqual([])
+    expect(store.ready).toBe(true)
+    expect(store.loading).toBe(false)
+    expect(store.error).toContain('加载失败')
+  })
+
+  it('并发调用只发起一次请求，两个结果一致', async () => {
+    const request = deferred<Post[]>()
+    fetchPostsMock.mockReturnValue(request.promise)
+
+    const store = usePostsStore()
+    const first = store.load()
+    const second = store.load()
+
+    expect(fetchPostsMock).toHaveBeenCalledTimes(1)
+
+    request.resolve([makePost()])
+
+    await expect(first).resolves.toBe(true)
+    await expect(second).resolves.toBe(true)
+    expect(store.posts).toHaveLength(1)
+  })
+
+  it('结束后再次 load 会重新请求并替换列表', async () => {
+    fetchPostsMock.mockResolvedValueOnce([makePost({ id: 'a' })])
+    fetchPostsMock.mockResolvedValueOnce([makePost({ id: 'c' }), makePost({ id: 'a' })])
+
+    const store = usePostsStore()
+    await store.load()
+    expect(store.posts).toHaveLength(1)
+
+    await store.load()
+
+    expect(fetchPostsMock).toHaveBeenCalledTimes(2)
+    expect(store.posts.map((post) => post.id)).toEqual(['c', 'a'])
+  })
+
+  it('失败后重试成功会清空错误文案', async () => {
+    fetchPostsMock.mockRejectedValueOnce(new Error('boom'))
+    fetchPostsMock.mockResolvedValueOnce([makePost()])
+
+    const store = usePostsStore()
+    await expect(store.load()).resolves.toBe(false)
+    expect(store.error).not.toBeNull()
+
+    await expect(store.load()).resolves.toBe(true)
+    expect(store.error).toBeNull()
+    expect(store.posts).toHaveLength(1)
+  })
+})
+
+describe('addPost', () => {
+  it('空内容与纯空白不发起请求', async () => {
+    const store = usePostsStore()
+
+    await expect(store.addPost('')).resolves.toEqual({ ok: false, reason: 'empty' })
+    await expect(store.addPost('   \n  ')).resolves.toEqual({ ok: false, reason: 'empty' })
+
+    expect(createPostMock).not.toHaveBeenCalled()
+    expect(store.posts).toEqual([])
+    expect(store.error).toBeNull()
+  })
+
+  it('超过最大长度不发起请求', async () => {
+    const store = usePostsStore()
+
+    await expect(store.addPost('花'.repeat(MAX_CONTENT_LENGTH + 1))).resolves.toEqual({
+      ok: false,
+      reason: 'too-long',
     })
 
-    it('生成带 id 与时间戳的完整记录', () => {
-      const store = usePostsStore()
-      store.hydrate()
+    expect(createPostMock).not.toHaveBeenCalled()
+    expect(store.posts).toEqual([])
+  })
 
-      const result = store.addPost('记录一下')
+  it('恰好达到上限时可以发布', async () => {
+    const content = '花'.repeat(MAX_CONTENT_LENGTH)
+    createPostMock.mockResolvedValue(makePost({ content }))
 
-      expect(result.ok).toBe(true)
-      if (!result.ok) return
+    const store = usePostsStore()
+    const result = await store.addPost(content)
 
-      expect(result.post.id).toEqual(expect.any(String))
-      expect(result.post.createdAt).toEqual(expect.any(Number))
-      expect(result.post.content).toBe('记录一下')
+    expect(result).toMatchObject({ ok: true })
+    if (!result.ok) return
+
+    expect(createPostMock).toHaveBeenCalledWith(content)
+    expect(store.posts[0].content).toHaveLength(MAX_CONTENT_LENGTH)
+  })
+
+  it('去除首尾空白后提交，并把服务端返回的记录置顶', async () => {
+    fetchPostsMock.mockResolvedValue([makePost({ id: 'old', content: '旧的心绪' })])
+    createPostMock.mockResolvedValue(makePost({ id: 'new', content: '新的心绪' }))
+
+    const store = usePostsStore()
+    await store.load()
+
+    const result = await store.addPost('  新的心绪  ')
+
+    expect(createPostMock).toHaveBeenCalledWith('新的心绪')
+    expect(result).toMatchObject({ ok: true, post: { id: 'new', content: '新的心绪' } })
+    expect(store.posts.map((post) => post.id)).toEqual(['new', 'old'])
+    expect(store.total).toBe(2)
+    expect(store.error).toBeNull()
+  })
+
+  it('服务端失败时返回 request-failed 且不污染列表', async () => {
+    fetchPostsMock.mockResolvedValue([makePost({ id: 'old', content: '旧的心绪' })])
+    createPostMock.mockRejectedValue(new Error('Failed to fetch'))
+
+    const store = usePostsStore()
+    await store.load()
+
+    await expect(store.addPost('发不出去的心绪')).resolves.toEqual({
+      ok: false,
+      reason: 'request-failed',
     })
 
-    it('空内容或纯空白内容被拒绝，且不写存储', () => {
-      const store = usePostsStore()
-      store.hydrate()
+    expect(store.posts.map((post) => post.id)).toEqual(['old'])
+    expect(store.error).toContain('发布失败')
+  })
 
-      expect(store.addPost('')).toEqual({ ok: false, reason: 'empty' })
-      expect(store.addPost('   \n  ')).toEqual({ ok: false, reason: 'empty' })
-      expect(store.posts).toEqual([])
-      expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull()
-    })
+  it('发布成功会清除上一次的错误文案', async () => {
+    createPostMock.mockRejectedValueOnce(new Error('boom'))
+    createPostMock.mockResolvedValueOnce(makePost({ id: 'new' }))
 
-    it('超过最大长度的内容被拒绝', () => {
-      const store = usePostsStore()
-      store.hydrate()
+    const store = usePostsStore()
+    await store.addPost('第一次失败')
+    expect(store.error).not.toBeNull()
 
-      const tooLong = '花'.repeat(MAX_CONTENT_LENGTH + 1)
+    await store.addPost('第二次成功')
 
-      expect(store.addPost(tooLong)).toEqual({ ok: false, reason: 'too-long' })
-      expect(store.posts).toEqual([])
-    })
-
-    it('恰好达到最大长度时可以发布', () => {
-      const store = usePostsStore()
-      store.hydrate()
-
-      const result = store.addPost('花'.repeat(MAX_CONTENT_LENGTH))
-
-      expect(result.ok).toBe(true)
-      expect(store.posts[0].content).toHaveLength(MAX_CONTENT_LENGTH)
-    })
-
-    it('写入存储失败时仍保留内存数据，并标记存储不可用', () => {
-      const store = usePostsStore()
-      store.hydrate()
-
-      const originalSetItem = Storage.prototype.setItem
-      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
-        this: Storage,
-        key: string,
-        value: string,
-      ) {
-        if (key === STORAGE_KEY) throw new Error('QuotaExceededError')
-        originalSetItem.call(this, key, value)
-      })
-
-      const result = store.addPost('只留在内存里')
-
-      expect(result).toMatchObject({ ok: true, persisted: false })
-      expect(store.posts).toHaveLength(1)
-      expect(store.storageAvailable).toBe(false)
-    })
-
-    it('存储确认不可用后不再重复尝试写入', () => {
-      const store = usePostsStore()
-      store.hydrate()
-
-      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
-        throw new Error('QuotaExceededError')
-      })
-
-      store.addPost('第一次失败')
-      const spy = vi.spyOn(Storage.prototype, 'setItem')
-      store.addPost('第二次')
-
-      expect(spy).not.toHaveBeenCalled()
-      expect(store.posts).toHaveLength(2)
-    })
-
-    it('新实例重新 hydrate 后能恢复之前发布的内容', () => {
-      const first = usePostsStore()
-      first.hydrate()
-      first.addPost('会留下来的内容')
-
-      setActivePinia(createPinia())
-      const second = usePostsStore()
-      second.hydrate()
-
-      expect(second.posts).toHaveLength(1)
-      expect(second.posts[0].content).toBe('会留下来的内容')
-    })
+    expect(store.error).toBeNull()
+    expect(store.posts).toHaveLength(1)
   })
 })

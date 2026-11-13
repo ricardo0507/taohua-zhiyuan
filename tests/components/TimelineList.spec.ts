@@ -69,6 +69,44 @@ describe('TimelineList', () => {
     expect(content.find('script').exists()).toBe(false)
   })
 
+  it('加载中展示占位骨架，且不展示空状态', () => {
+    const wrapper = mount(TimelineList, {
+      props: { posts: [], now: NOW, loading: true },
+    })
+
+    expect(wrapper.find('[data-testid="timeline-loading"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="empty-state"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="post-item"]')).toHaveLength(0)
+  })
+
+  it('加载中即使已有内容也展示骨架而不是卡片', () => {
+    const wrapper = mount(TimelineList, {
+      props: { posts: [makePost()], now: NOW, loading: true },
+    })
+
+    expect(wrapper.find('[data-testid="timeline-loading"]').exists()).toBe(true)
+    expect(wrapper.findAll('[data-testid="post-item"]')).toHaveLength(0)
+    expect(wrapper.find('[data-testid="empty-state"]').exists()).toBe(false)
+  })
+
+  it('加载结束后回到列表：有内容展示卡片，无内容展示空状态', async () => {
+    const wrapper = mount(TimelineList, {
+      props: { posts: [makePost({ content: '加载完成的内容' })], now: NOW, loading: true },
+    })
+
+    expect(wrapper.find('[data-testid="timeline-loading"]').exists()).toBe(true)
+
+    await wrapper.setProps({ loading: false })
+
+    expect(wrapper.find('[data-testid="timeline-loading"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="post-item"]')).toHaveLength(1)
+    expect(wrapper.text()).toContain('加载完成的内容')
+
+    await wrapper.setProps({ posts: [] })
+
+    expect(wrapper.find('[data-testid="empty-state"]').exists()).toBe(true)
+  })
+
   it('刚发布的内容带 fresh 动画标记', () => {
     const wrapper = mount(TimelineList, {
       props: {

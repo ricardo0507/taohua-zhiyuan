@@ -1,121 +1,91 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { createId } from '@/utils/id'
+import { MAX_CONTENT_LENGTH, createPost, fetchPosts } from '@/api/posts'
+import type { Post } from '@/api/posts'
 
-export const STORAGE_KEY = 'taohua:posts'
-export const MAX_CONTENT_LENGTH = 280
+// 组件统一从 store 引入契约，避免改动调用方
+export { MAX_CONTENT_LENGTH }
+export type { Post }
 
-const PROBE_KEY = '__taohua_probe__'
+export const LOAD_ERROR_MESSAGE = '内容加载失败，请确认服务已启动'
+export const ADD_ERROR_MESSAGE = '发布失败，请确认服务已启动后重试'
 
-export interface Post {
-  id: string
-  content: string
-  createdAt: number
-}
-
-export type AddPostFailureReason = 'empty' | 'too-long'
+export type AddPostFailureReason = 'empty' | 'too-long' | 'request-failed'
 
 export type AddPostResult =
-  | { ok: true; post: Post; persisted: boolean }
+  | { ok: true; post: Post }
   | { ok: false; reason: AddPostFailureReason }
-
-function detectStorage(): boolean {
-  try {
-    window.localStorage.setItem(PROBE_KEY, '1')
-    window.localStorage.removeItem(PROBE_KEY)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/** 把存储中的任意数据归一化为合法记录，结构不完整则丢弃 */
-function normalizePost(raw: unknown): Post | null {
-  if (!raw || typeof raw !== 'object') return null
-
-  const item = raw as Record<string, unknown>
-  if (typeof item.content !== 'string' || item.content.length === 0) return null
-
-  return {
-    id: item.id ? String(item.id) : createId(),
-    content: item.content,
-    createdAt: Number(item.createdAt) || Date.now(),
-  }
-}
 
 export const usePostsStore = defineStore('posts', () => {
   const posts = ref<Post[]>([])
-  /** localStorage 是否可写；不可用时退化为本次会话的内存数据 */
-  const storageAvailable = ref(true)
+  /** 首次加载是否结束（成功或失败） */
   const ready = ref(false)
+  const loading = ref(false)
+  /** 最近一次读写失败的提示文案，成功后清空 */
+  const error = ref<string | null>(null)
 
   const total = computed(() => posts.value.length)
   const isEmpty = computed(() => posts.value.length === 0)
 
-  function persist(): boolean {
-    if (!storageAvailable.value) return false
+  let inflight: Promise<boolean> | null = null
+
+  async function runLoad(): Promise<boolean> {
+    loading.value = true
+    error.value = null
 
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(posts.value))
+      posts.value = await fetchPosts()
+
       return true
     } catch {
-      storageAvailable.value = false
+      error.value = LOAD_ERROR_MESSAGE
+
       return false
-    }
-  }
-
-  /** 从 localStorage 载入历史内容，重复调用是安全的 */
-  function hydrate(): void {
-    storageAvailable.value = detectStorage()
-
-    if (!storageAvailable.value) {
-      posts.value = []
+    } finally {
+      loading.value = false
       ready.value = true
-      return
     }
-
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY)
-      if (!raw) {
-        posts.value = []
-      } else {
-        const parsed: unknown = JSON.parse(raw)
-        posts.value = Array.isArray(parsed)
-          ? parsed.map(normalizePost).filter((post): post is Post => post !== null)
-          : []
-      }
-    } catch {
-      posts.value = []
-    }
-
-    ready.value = true
   }
 
-  /** 发布一条内容；新内容置顶，并尽可能写入本地存储 */
-  function addPost(content: string): AddPostResult {
+  /** 拉取服务端列表；并发调用共享同一个请求 */
+  function load(): Promise<boolean> {
+    if (!inflight) {
+      inflight = runLoad().finally(() => {
+        inflight = null
+      })
+    }
+
+    return inflight
+  }
+
+  /** 发布一条内容：本地先校验，再交由服务端落库，成功后置顶 */
+  async function addPost(content: string): Promise<AddPostResult> {
     const text = content.trim()
 
     if (!text) return { ok: false, reason: 'empty' }
     if (text.length > MAX_CONTENT_LENGTH) return { ok: false, reason: 'too-long' }
 
-    const post: Post = {
-      id: createId(),
-      content: text,
-      createdAt: Date.now(),
+    try {
+      const post = await createPost(text)
+      posts.value = [post, ...posts.value.filter((item) => item.id !== post.id)]
+      error.value = null
+
+      return { ok: true, post }
+    } catch {
+      error.value = ADD_ERROR_MESSAGE
+
+      return { ok: false, reason: 'request-failed' }
     }
-
-    posts.value = [post, ...posts.value]
-
-    return { ok: true, post, persisted: persist() }
   }
 
   return {
     posts,
-    storageAvailable,
     ready,
+    loading,
+    error,
     total,
     isEmpty,
-    hydrate,
+    load,
     addPost,
   }
 })

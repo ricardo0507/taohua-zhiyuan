@@ -9,10 +9,14 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  server: {
+    proxy: {
+      '/api': 'http://127.0.0.1:8787',
+    },
+  },
   test: {
     environment: 'jsdom',
-    setupFiles: ['./tests/setup.ts'],
-    include: ['tests/**/*.spec.ts'],
+    include: ['tests/**/*.spec.ts', 'tests/server/**/*.spec.ts'],
     restoreMocks: true,
   },
 })
